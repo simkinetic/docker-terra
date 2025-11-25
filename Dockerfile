@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+ARG TARGET_PLATFORM=linux/arm64
+FROM --platform=$TARGET_PLATFORM ubuntu:24.04 AS builder
 
 # Install build deps (Ubuntu has great static support)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -70,7 +71,7 @@ RUN wget -q https://github.com/renehiemstra/cosm/releases/download/v0.3.1/cosm-l
 # ------------------------------------------------------------------
 # 3. Final small image (exact glibc match)
 # ------------------------------------------------------------------
-FROM --platform=linux/arm64 ubuntu:24.04
+FROM --platform=$TARGET_PLATFORM ubuntu:24.04
 
 # Install git and ca-certificates for the sandbox
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
