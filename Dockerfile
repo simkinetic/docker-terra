@@ -86,12 +86,27 @@ RUN if [ "${PLATFORM}" = "linux/arm64" ]; then \
     rm ${FILE} check.sha
 
 # ------------------------------------------------------------------
+# 2.6. Build FLINT
+# ------------------------------------------------------------------
+
+# Install build deps (Ubuntu has great static support)
+RUN apt-get update && apt-get install -y autoconf automake libtool-bin \
+    libgmp-dev libmpfr-dev
+
+RUN git clone https://github.com/flintlib/flint.git /flint && \
+    cd /flint && \
+    ./bootstrap.sh && \
+    ./configure --prefix=/terra-install CC="${CC}" CFLAGS="${CFLAGS}" && \
+    make -j$(nproc) && \
+    make install
+
+# ------------------------------------------------------------------
 # 3. Final small image (exact glibc match)
 # ------------------------------------------------------------------
 FROM ubuntu:24.04
 
 # Install git, ca-certificates, openssh-client, libc6-dev, and clang for the sandbox
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssh-client libc6-dev clang && \
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssh-client libc6-dev clang libgmp-dev libmpfr-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up symlinks for clang and clang++
@@ -100,6 +115,9 @@ RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 180 \
 
 # Copy the full Terra install (bin, lib, share) for module access
 COPY --from=builder /terra-install/ /usr/local/
+
+# Update ldconfig to include /usr/local/lib
+RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/local.conf && ldconfig
 
 # Set the cosm depot path and clone the terra standard registry
 ENV COSM_DEPOT_PATH="/root/.cosm"
