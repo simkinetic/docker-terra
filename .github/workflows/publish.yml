@@ -1,15 +1,18 @@
-name: Publish terra
+name: Publish terra images
 
 on:
   push:
     tags: [ 'v*' ]
 
 jobs:
-  build-and-push:
+  build-and-test:
     runs-on: ubuntu-latest
     permissions:
       packages: write
       contents: read
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -19,26 +22,36 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (without push)
+      - name: Build ${{ matrix.platform }} image (without push)
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/arm64,linux/amd64  # Build both!
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
           load: true
-          tags: local-terra:test
+          tags: local-terra-${{ replace(matrix.platform, '/', '-') }}:test
           push: false
 
-      - name: Test image (arm64)
+      - name: Test ${{ matrix.platform }} image
         run: |
-          # Run tests on arm64 (emulated)
-          docker run --rm --platform linux/arm64 -e COSM_DEPOT_PATH=/root/.cosm local-terra:test terra --version | grep "Terra" || exit 1
-          docker run --rm --platform linux/arm64 -e COSM_DEPOT_PATH=/root/.cosm local-terra:test cosm --version | grep "cosm version" || exit 1
+          # Test terra --version (expect non-empty output with 'Terra')
+          TERRA_OUTPUT=$(docker run --rm --platform ${{ matrix.platform }} local-terra-${{ replace(matrix.platform, '/', '-') }}:test terra --version)
+          if [ -z "$TERRA_OUTPUT" ] || ! echo "$TERRA_OUTPUT" | grep -q "Terra"; then
+            echo "Error: terra --version failed or produced unexpected output: $TERRA_OUTPUT"
+            exit 1
+          fi
+          echo "Terra test passed: $TERRA_OUTPUT"
 
-      - name: Test image (amd64)
-        run: |
-          # Run tests on amd64 (native on runner)
-          docker run --rm --platform linux/amd64 -e COSM_DEPOT_PATH=/root/.cosm local-terra:test terra --version | grep "Terra" || exit 1
-          docker run --rm --platform linux/amd64 -e COSM_DEPOT_PATH=/root/.cosm local-terra:test cosm --version | grep "cosm version" || exit 1
+          # Test cosm --version with env var to skip interactive prompt (expect output with 'cosm version')
+          COSM_OUTPUT=$(docker run --rm --platform ${{ matrix.platform }} -e COSM_DEPOT_PATH=/root/.cosm local-terra-${{ replace(matrix.platform, '/', '-') }}:test cosm --version)
+          if [ -z "$COSM_OUTPUT" ] || ! echo "$COSM_OUTPUT" | grep -q "cosm version"; then
+            echo "Error: cosm --version failed or produced unexpected output: $COSM_OUTPUT"
+            exit 1
+          fi
+          echo "Cosm test passed: $COSM_OUTPUT"
+
+          # Optional: Non-interactive sandbox check
+          docker run --rm --platform ${{ matrix.platform }} local-terra-${{ replace(matrix.platform, '/', '-') }}:test bash -c "echo 'Sandbox OK'"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -47,12 +60,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push multi-platform image
+      - name: Push ${{ matrix.platform }} image (only if tests pass)
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/arm64,linux/amd64
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ghcr.io/simkinetic/terra:latest
-            ghcr.io/simkinetic/terra:${{ github.ref_name }}
+            ghcr.io/simkinetic/terra-${{ replace(matrix.platform, 'linux/', '') }}:latest
+            ghcr.io/simkinetic/terra-${{ replace(matrix.platform, 'linux/', '') }}:${{ github.ref_name }}
+
+  create-multi-platform-manifest:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-platform manifest
+        run: |
+          docker manifest create ghcr.io/simkinetic/terra:${{ github.ref_name }} \
+            --amend ghcr.io/simkinetic/terra-amd64:${{ github.ref_name }} \
+            --amend ghcr.io/simkinetic/terra-arm64:${{ github.ref_name }}
+          docker manifest push ghcr.io/simkinetic/terra:${{ github.ref_name }}
+
+          docker manifest create ghcr.io/simkinetic/terra:latest \
+            --amend ghcr.io/simkinetic/terra-amd64:latest \
+            --amend ghcr.io/simkinetic/terra-arm64:latest
+          docker manifest push ghcr.io/simkinetic/terra:latest
